@@ -3,7 +3,7 @@ import random
 import shutil
 
 SOURCE = Path(r"E:\SPCK-CSI18\data\standardized_256")
-DEST = Path(__file__).parent / "dataset"
+DEST = Path(r"E:\SPCK-CSI18\data\dataset")
 
 random.seed(42)
 
