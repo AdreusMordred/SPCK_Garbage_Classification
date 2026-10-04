@@ -2,8 +2,8 @@ from pathlib import Path
 import random
 import shutil
 
-SOURCE = Path("E:\SPCK-CSI18\data\standardized_256")
-DEST = Path("dataset")
+SOURCE = Path(r"E:\SPCK-CSI18\data\standardized_256")
+DEST = Path(__file__).parent / "dataset"
 
 random.seed(42)
 
