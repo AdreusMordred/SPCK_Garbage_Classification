@@ -5,3 +5,4 @@ numpy>=1.26.0, <=2.20.0
 matplotlib>=3.8.0
 ai-edge-litert
 Pillow
+tflite-runtime==2.14.0

@@ -20,7 +20,24 @@ st.set_page_config(
 # ============================================================
 # CẤU HÌNH MÔ HÌNH  (chỉnh theo mô hình của bạn)
 # ============================================================
-MODEL_PATH = r"converted_model_retry\garbage_classifier_float32.tflite"   # file TFLite float16 (MobileNetV3 train bằng PyTorch)
+from pathlib import Path
+
+APP_DIR = Path(__file__).resolve().parent   # thư mục chứa app.py
+
+# Dùng dấu "/" (không dùng "\") để chạy được cả Windows lẫn Linux/Streamlit Cloud.
+# Đường dẫn tính từ thư mục chứa app.py, KHÔNG phụ thuộc bạn chạy lệnh từ đâu.
+MODEL_PATH = "converted_model_retry\garbage_classifier_float32.tflite"   # đặt file .tflite cùng thư mục với app.py
+
+
+def find_model_file(rel_path: str):
+    """Tìm file .tflite: thử đường dẫn đã cấu hình, nếu không có thì tìm file .tflite khác trong dự án."""
+    p = Path(rel_path.replace("\\", "/"))
+    candidates = [p] if p.is_absolute() else [APP_DIR / p, Path.cwd() / p]
+    for c in candidates:
+        if c.is_file():
+            return c
+    found = sorted(APP_DIR.rglob("*.tflite"))
+    return found[0] if found else None
 
 # Kiểu chuẩn hoá ảnh đầu vào – phải GIỐNG lúc train:
 #   "imagenet": (x/255 - mean) / std      -> mặc định của torchvision MobileNetV3
@@ -187,10 +204,11 @@ def _get_interpreter_cls():
 @st.cache_resource(show_spinner="Đang tải mô hình TFLite...")
 def load_model(path: str):
     """Nạp mô hình .tflite (chạy CPU). Trả về None nếu không tìm thấy file."""
-    if not os.path.exists(path):
+    model_file = find_model_file(path)
+    if model_file is None:
         return None
     Interpreter = _get_interpreter_cls()
-    interpreter = Interpreter(model_path=path, num_threads=2)
+    interpreter = Interpreter(model_path=str(model_file), num_threads=2)
     interpreter.allocate_tensors()
     inp = interpreter.get_input_details()[0]
     out = interpreter.get_output_details()[0]
@@ -339,9 +357,19 @@ with st.sidebar:
 
     st.divider()
     if model is None:
-        st.error(f"Không tìm thấy `{MODEL_PATH}`.\n\nĐang chạy **chế độ DEMO** (kết quả ngẫu nhiên).")
+        st.error(
+            f"Không tìm thấy `{MODEL_PATH}`.\n\n"
+            f"Đã tìm trong: `{APP_DIR}`\n\n"
+            "Đang chạy **chế độ DEMO** (kết quả ngẫu nhiên)."
+        )
+        with st.expander("File trong thư mục app"):
+            st.code("\n".join(sorted(str(p.relative_to(APP_DIR)) for p in APP_DIR.rglob("*")
+                                     if p.is_file() and ".git" not in p.parts)[:50]) or "(trống)")
     else:
         st.success("Mô hình TFLite đã sẵn sàng ✅")
+        _mf = find_model_file(MODEL_PATH)
+        if _mf:
+            st.caption(f"File: `{_mf.relative_to(APP_DIR) if APP_DIR in _mf.parents else _mf}`")
         st.caption(
             f"Đầu vào: {model['size'][0]}×{model['size'][1]} • "
             f"{'NCHW' if model['channels_first'] else 'NHWC'} • chuẩn hoá: {NORMALIZE}"
