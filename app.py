@@ -20,7 +20,7 @@ st.set_page_config(
 # ============================================================
 # CẤU HÌNH MÔ HÌNH  (chỉnh theo mô hình của bạn)
 # ============================================================
-MODEL_PATH = "converted_model_retry\garbage_classifier_float16.tflite"   # file TFLite float16 (MobileNetV3 train bằng PyTorch)
+MODEL_PATH = r"converted_model_retry\garbage_classifier_float32.tflite"   # file TFLite float16 (MobileNetV3 train bằng PyTorch)
 
 # Kiểu chuẩn hoá ảnh đầu vào – phải GIỐNG lúc train:
 #   "imagenet": (x/255 - mean) / std      -> mặc định của torchvision MobileNetV3
