@@ -26,7 +26,7 @@ APP_DIR = Path(__file__).resolve().parent   # thư mục chứa app.py
 
 # Dùng dấu "/" (không dùng "\") để chạy được cả Windows lẫn Linux/Streamlit Cloud.
 # Đường dẫn tính từ thư mục chứa app.py, KHÔNG phụ thuộc bạn chạy lệnh từ đâu.
-MODEL_PATH = "converted_model_retry\garbage_classifier_float32.tflite"   # đặt file .tflite cùng thư mục với app.py
+MODEL_PATH = r"converted_model_retry\garbage_classifier_float32.tflite"   # đặt file .tflite cùng thư mục với app.py
 
 
 def find_model_file(rel_path: str):
