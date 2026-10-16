@@ -392,13 +392,13 @@ with st.sidebar:
 st.markdown(
     """
     <div class="hero">
-        <h1>♻️ Phân loại rác thải bằng AI</h1>
+        <h1>♻️ Phân loại rác thải bằng hình ảnh</h1>
         <p>Tải ảnh hoặc chụp trực tiếp — mô hình học sâu sẽ cho biết loại rác và cách bỏ đúng thùng.</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
-
+ 
 tab_upload, tab_camera, tab_history, tab_about = st.tabs(
     ["📁 Tải ảnh lên", "📷 Chụp ảnh", "🕘 Lịch sử", "ℹ️ Giới thiệu"]
 )
