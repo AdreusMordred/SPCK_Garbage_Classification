@@ -6,3 +6,5 @@ matplotlib>=3.8.0
 ai-edge-litert
 Pillow
 tflite-runtime==2.14.0
+torch
+torchvision

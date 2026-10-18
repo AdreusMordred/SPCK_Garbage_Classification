@@ -1,1 +1,15 @@
 .env
+
+# Datasets
+/data/
+
+# Training checkpoints
+garbage_classifier_4datasets_checkpoint.pth
+garbage_classifier_latest.pth
+garbage_classifier_best.pth
+
+# Converted models
+/converted_model_retry/
+*.onnx
+*.onnx.data
+*.tflite
