@@ -17,36 +17,49 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ============================================================
+# CẤU HÌNH MÔ HÌNH  (chỉnh theo mô hình của bạn)
+# ============================================================
 from pathlib import Path
 
-APP_DIR = Path(__file__).resolve().parent   # thư mục chứa app.py
+APP_DIR = Path(r"app.py").resolve().parent   # thư mục chứa app.py
 
 # Dùng dấu "/" (không dùng "\") để chạy được cả Windows lẫn Linux/Streamlit Cloud.
 # Đường dẫn tính từ thư mục chứa app.py, KHÔNG phụ thuộc bạn chạy lệnh từ đâu.
-MODEL_PATH = r"garbage_classifier_4datasets_best.pth" 
+MODEL_PATH = "garbage_classifier_4datasets_best.pth"            # file mô hình PyTorch (.pth / .pt), đặt cạnh app.py
+
+# Chỉ cần khi file là state_dict (trọng số). Với file TorchScript hoặc mô hình lưu nguyên
+# (torch.save(model)) thì app tự nhận biết và bỏ qua dòng này.
+ARCH = "mobilenet_v3_small"         # "mobilenet_v3_large" hoặc "mobilenet_v3_small"
+
+IMG_SIZE = (256, 256)               # (rộng, cao) – đúng bằng kích thước lúc train/test
+
+SUPPORTED_EXT = ("*.pth", "*.pt", "*.pth.tar", "*.ckpt")
 
 
 def find_model_file(rel_path: str):
-    """Tìm file .tflite: thử đường dẫn đã cấu hình, nếu không có thì tìm file .tflite khác trong dự án."""
+    """Tìm file mô hình: thử đường dẫn đã cấu hình, nếu không có thì tìm file .pth/.pt khác trong dự án."""
     p = Path(rel_path.replace("\\", "/"))
     candidates = [p] if p.is_absolute() else [APP_DIR / p, Path.cwd() / p]
     for c in candidates:
         if c.is_file():
             return c
-    found = sorted(APP_DIR.rglob("*.tflite"))
-    return found[0] if found else None
+    for pattern in SUPPORTED_EXT:
+        found = sorted(APP_DIR.rglob(pattern))
+        if found:
+            return found[0]
+    return None
+
 
 # Kiểu chuẩn hoá ảnh đầu vào – phải GIỐNG lúc train:
 #   "imagenet": (x/255 - mean) / std      -> mặc định của torchvision MobileNetV3
 #   "zero_one": x/255                      -> nếu lúc train chỉ dùng ToTensor()
-#   "minus_one_one": x/127.5 - 1           -> kiểu Keras MobileNetV3
 #   "none": giữ nguyên 0..255              -> nếu chuẩn hoá đã nằm trong mô hình
 NORMALIZE = "imagenet"
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-DEFAULT_IMG_SIZE = (224, 224)    # chỉ dùng khi không đọc được từ mô hình
 
-# Thứ tự phải TRÙNG với thứ tự lớp lúc huấn luyện (theo bảng chữ cái nếu dùng flow_from_directory)
+# Thứ tự phải TRÙNG với thứ tự lớp lúc huấn luyện (PyTorch ImageFolder: theo bảng chữ cái = train_dataset.classes)
 CLASS_NAMES = ["battery", "biological", "cardboard", "clothes", "glass", "metal", "paper", "plastic", "shoes", "trash"]
 
 # Thông tin hiển thị cho từng lớp
@@ -182,72 +195,110 @@ st.markdown(
 # ============================================================
 # HÀM XỬ LÝ
 # ============================================================
-def _get_interpreter_cls():
-    """Ưu tiên runtime nhẹ, rơi về TensorFlow nếu không có."""
-    try:
-        from ai_edge_litert.interpreter import Interpreter
-        return Interpreter
-    except Exception:
-        pass
-    try:
-        from tflite_runtime.interpreter import Interpreter
-        return Interpreter
-    except Exception:
-        pass
-    import tensorflow as tf
-    return tf.lite.Interpreter
+def _strip_prefix(state_dict: dict) -> dict:
+    """Bỏ tiền tố 'module.' (DataParallel) hoặc 'model.' nếu có."""
+    out = {}
+    for k, v in state_dict.items():
+        for prefix in ("module.", "model."):
+            if k.startswith(prefix):
+                k = k[len(prefix):]
+        out[k] = v
+    return out
 
 
-@st.cache_resource(show_spinner="Đang tải mô hình TFLite...")
+def _build_from_state_dict(state_dict: dict):
+    """Dựng MobileNetV3 của torchvision rồi nạp trọng số."""
+    import torch.nn as nn
+    from torchvision import models
+
+    if not hasattr(models, ARCH):
+        raise ValueError(f"ARCH='{ARCH}' không hợp lệ (dùng mobilenet_v3_large hoặc mobilenet_v3_small).")
+    net = getattr(models, ARCH)(weights=None)
+
+    # Số lớp đầu ra lấy từ chính file trọng số (tránh sai khi bạn đổi số lớp)
+    head_keys = [k for k in state_dict if k.startswith("classifier.") and k.endswith(".weight")]
+    if not head_keys:
+        raise ValueError("Không thấy 'classifier.*.weight' trong file trọng số. Kiểm tra lại ARCH hoặc cách lưu.")
+    last_key = sorted(head_keys, key=lambda k: int(k.split(".")[1]))[-1]
+    n_out = state_dict[last_key].shape[0]
+    net.classifier[-1] = nn.Linear(net.classifier[-1].in_features, n_out)
+
+    net.load_state_dict(state_dict, strict=True)
+    return net
+
+
+@st.cache_resource(show_spinner="Đang tải mô hình PyTorch...")
 def load_model(path: str):
-    """Nạp mô hình .tflite (chạy CPU). Trả về None nếu không tìm thấy file."""
+    """Nạp mô hình PyTorch (CPU). Trả về None nếu không thấy file, hoặc {'error': ...} nếu nạp lỗi."""
     model_file = find_model_file(path)
     if model_file is None:
         return None
-    Interpreter = _get_interpreter_cls()
-    interpreter = Interpreter(model_path=str(model_file), num_threads=2)
-    interpreter.allocate_tensors()
-    inp = interpreter.get_input_details()[0]
-    out = interpreter.get_output_details()[0]
+    try:
+        import torch
 
-    shape = [int(s) for s in inp["shape"]]  # NHWC: [1,H,W,3] hoặc NCHW: [1,3,H,W]
-    channels_first = len(shape) == 4 and shape[1] == 3 and shape[3] != 3
-    h, w = (shape[2], shape[3]) if channels_first else (shape[1], shape[2])
-    return {
-        "interpreter": interpreter,
-        "input": inp,
-        "output": out,
-        "channels_first": channels_first,
-        "size": (w, h),
-    }
+        torch.set_num_threads(2)
+        kind = None
+        net = None
+
+        # 1) TorchScript (torch.jit.save / torch.jit.trace / torch.jit.script)
+        try:
+            net = torch.jit.load(str(model_file), map_location="cpu")
+            kind = "TorchScript"
+        except Exception:
+            pass
+
+        # 2) torch.save(...): state_dict hoặc mô hình lưu nguyên
+        if net is None:
+            try:
+                obj = torch.load(str(model_file), map_location="cpu", weights_only=True)
+            except Exception:
+                # Mô hình lưu nguyên cần weights_only=False (chỉ dùng với file CỦA BẠN)
+                obj = torch.load(str(model_file), map_location="cpu", weights_only=False)
+
+            if isinstance(obj, torch.nn.Module):
+                net, kind = obj, "Mô hình đầy đủ"
+            elif isinstance(obj, dict):
+                sd = obj
+                for key in ("state_dict", "model_state_dict", "model"):
+                    if key in obj and isinstance(obj[key], dict):
+                        sd = obj[key]
+                        break
+                net = _build_from_state_dict(_strip_prefix(sd))
+                kind = f"state_dict ({ARCH})"
+            else:
+                raise ValueError(f"Không hiểu định dạng file: {type(obj).__name__}")
+
+        net.eval()
+
+        # Kiểm tra chạy thử và số lớp đầu ra
+        w, h = IMG_SIZE
+        with torch.inference_mode():
+            out = net(torch.zeros(1, 3, h, w))
+        n_out = int(out.shape[-1])
+        if n_out != len(CLASS_NAMES):
+            raise ValueError(
+                f"Mô hình có {n_out} đầu ra nhưng CLASS_NAMES có {len(CLASS_NAMES)} lớp. "
+                "Hãy sửa CLASS_NAMES cho đúng với lúc train."
+            )
+        return {"net": net, "kind": kind, "file": model_file, "size": IMG_SIZE}
+    except Exception as e:  # hiển thị lỗi thật ở sidebar thay vì chạy demo âm thầm
+        return {"error": f"{type(e).__name__}: {e}", "file": model_file}
 
 
-def preprocess(img: Image.Image, model: dict) -> np.ndarray:
+def preprocess(img: Image.Image):
+    import torch
+
     img = ImageOps.exif_transpose(img).convert("RGB")
-    size = model["size"] if model else DEFAULT_IMG_SIZE
-    img = img.resize(size, Image.Resampling.BILINEAR)
+    img = img.resize(IMG_SIZE, Image.Resampling.BILINEAR)
     arr = np.asarray(img, dtype=np.float32)
 
     if NORMALIZE == "imagenet":
         arr = (arr / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
     elif NORMALIZE == "zero_one":
         arr = arr / 255.0
-    elif NORMALIZE == "minus_one_one":
-        arr = arr / 127.5 - 1.0
 
-    if model and model["channels_first"]:
-        arr = np.transpose(arr, (2, 0, 1))  # HWC -> CHW
-    arr = np.expand_dims(arr, axis=0)
-
-    # Mô hình float16 thường vẫn nhận đầu vào float32; xử lý cả trường hợp khác
-    if model:
-        dtype = model["input"]["dtype"]
-        if dtype == np.uint8 or dtype == np.int8:
-            scale, zero = model["input"]["quantization"]
-            arr = (arr / scale + zero).astype(dtype) if scale else arr.astype(dtype)
-        else:
-            arr = arr.astype(dtype)
-    return arr
+    arr = np.transpose(arr, (2, 0, 1))                       # HWC -> CHW
+    return torch.from_numpy(np.ascontiguousarray(arr)).unsqueeze(0)  # [1,3,H,W]
 
 
 def predict(model, img: Image.Image) -> np.ndarray:
@@ -258,10 +309,11 @@ def predict(model, img: Image.Image) -> np.ndarray:
         e = np.exp(logits - logits.max())
         return e / e.sum()
 
-    interp = model["interpreter"]
-    interp.set_tensor(model["input"]["index"], preprocess(img, model))
-    interp.invoke()
-    out = interp.get_tensor(model["output"]["index"])[0].astype(np.float32)
+    import torch
+
+    with torch.inference_mode():
+        out = model["net"](preprocess(img))
+    out = out.squeeze(0).float().numpy()
 
     if not np.isclose(out.sum(), 1.0, atol=1e-3) or (out < 0).any():  # logits -> softmax
         e = np.exp(out - out.max())
@@ -341,7 +393,9 @@ def add_history(name: str, conf: float, img: Image.Image):
 if "history" not in st.session_state:
     st.session_state.history = []
 
-model = load_model(MODEL_PATH)
+_loaded = load_model(MODEL_PATH)
+load_error = _loaded.get("error") if isinstance(_loaded, dict) else None
+model = None if load_error else _loaded
 
 # ============================================================
 # SIDEBAR
@@ -353,7 +407,11 @@ with st.sidebar:
     top_k = st.slider("Số lớp hiển thị trong biểu đồ", 2, len(CLASS_NAMES), 4)
 
     st.divider()
-    if model is None:
+    if load_error:
+        st.error("Tìm thấy file mô hình nhưng **nạp bị lỗi** → đang chạy **chế độ DEMO** (kết quả ngẫu nhiên).")
+        st.code(load_error)
+        st.caption("Gợi ý: kiểm tra `ARCH` (mobilenet_v3_large / small), `CLASS_NAMES` và cách lưu file mô hình.")
+    elif model is None:
         st.error(
             f"Không tìm thấy `{MODEL_PATH}`.\n\n"
             f"Đã tìm trong: `{APP_DIR}`\n\n"
@@ -363,13 +421,12 @@ with st.sidebar:
             st.code("\n".join(sorted(str(p.relative_to(APP_DIR)) for p in APP_DIR.rglob("*")
                                      if p.is_file() and ".git" not in p.parts)[:50]) or "(trống)")
     else:
-        st.success("Mô hình TFLite đã sẵn sàng ✅")
-        _mf = find_model_file(MODEL_PATH)
-        if _mf:
-            st.caption(f"File: `{_mf.relative_to(APP_DIR) if APP_DIR in _mf.parents else _mf}`")
+        st.success("Mô hình PyTorch đã sẵn sàng ✅")
+        _mf = model["file"]
+        st.caption(f"File: `{_mf.relative_to(APP_DIR) if APP_DIR in _mf.parents else _mf}`")
         st.caption(
-            f"Đầu vào: {model['size'][0]}×{model['size'][1]} • "
-            f"{'NCHW' if model['channels_first'] else 'NHWC'} • chuẩn hoá: {NORMALIZE}"
+            f"Kiểu: {model['kind']} • Đầu vào: {model['size'][0]}×{model['size'][1]} • "
+            f"chuẩn hoá: {NORMALIZE} • CPU"
         )
 
     st.divider()
@@ -395,7 +452,7 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
- 
+
 tab_upload, tab_camera, tab_history, tab_about = st.tabs(
     ["📁 Tải ảnh lên", "📷 Chụp ảnh", "🕘 Lịch sử", "ℹ️ Giới thiệu"]
 )
@@ -420,7 +477,7 @@ with tab_upload:
             add_history(name, conf, img)
             st.divider()
     else:
-        st.info("👆 Hãy tải ảnh rác thải lên để bắt đầu.")
+        st.info("👆 Hãy tải ảnh rác thải lên để bắt đầu (Lưu ý: ảnh phải rõ nét).")
 
 # ---------- Tab camera ----------
 with tab_camera:
@@ -478,4 +535,4 @@ with tab_about:
         - Tránh ảnh mờ hoặc bị che khuất.
         """
     )
-    st.caption("Làm bằng Python • Streamlit • PyTorch (train) • TensorFlow Lite (deploy)")
+    st.caption("Làm bằng Python • Streamlit • PyTorch • Github")
